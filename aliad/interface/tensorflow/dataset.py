@@ -59,14 +59,26 @@ def prepare_dataset(*X: Union[np.ndarray, tf.Tensor],
         if buffer_size is None:
             buffer_size = X[0].shape[0]
 
-        if weight is None:
-            ds = tf.data.Dataset.from_tensor_slices((tuple(X), y))
-        else:
-            ds = tf.data.Dataset.from_tensor_slices((tuple(X), y, weight))
+        if len(X) == 1:
+            if weight is None:
+                ds = tf.data.Dataset.from_tensor_slices((X[0], y))
+            else:
+                ds = tf.data.Dataset.from_tensor_slices((X[0], y, weight))
 
-        if preprocess_function is not None:
-            ds = ds.map(lambda x, y: (preprocess_function(*x), y),
-                        num_parallel_calls=tf.data.AUTOTUNE)
+            if preprocess_function is not None:
+                ds = ds.map(lambda x, y: (preprocess_function(x), y),
+                            num_parallel_calls=tf.data.AUTOTUNE)
+        elif len(X) > 1:
+            if weight is None:
+                ds = tf.data.Dataset.from_tensor_slices((tuple(X), y))
+            else:
+                ds = tf.data.Dataset.from_tensor_slices((tuple(X), y, weight))
+
+            if preprocess_function is not None:
+                ds = ds.map(lambda x, y: (preprocess_function(*x), y),
+                            num_parallel_calls=tf.data.AUTOTUNE)
+        else:
+            raise ValueError('no feature arrays specified')
         
         if cache:
             ds = ds.cache()
