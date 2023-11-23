@@ -1,8 +1,10 @@
+import os
+import json
 from typing import Dict, List, Optional, Union
 import numpy as np
 import awkward as ak
 
-from quickstats import AbstractObject
+from quickstats import AbstractObject, semistaticmethod
 from quickstats.utils.common_utils import combine_dict
 
 from aliad.interface.awkward.utils import get_record_outer_shapes
@@ -17,10 +19,8 @@ class PointCloudDataset(AbstractObject):
         "jet_features"  : ["jet_pt", "jet_eta", "jet_phi", "jet_m", "N", "tau12", "tau23"]
     }
     
-    def __init__(self, filenames:Union[Dict, str],
-                 feature_dict:Dict,
+    def __init__(self, feature_dict:Dict,
                  class_labels:Dict,
-                 samples:Optional[List[str]]=None,
                  sample_sizes:Optional[Dict]=None,
                  num_jets:int=2, pad_size:int=300,
                  shuffle:bool=False, seed:int=2023,
@@ -37,11 +37,37 @@ class PointCloudDataset(AbstractObject):
         self._features = {}
         self._labels   = None
         self._weights  = None
-        self.load(filenames, samples=samples)
+        self._feature_metadata = None
 
     def __len__(self):
         return self._labels.shape[0]
 
+    def convert_to_tfrecords(self, filenames:Union[Dict, str], outname:str,
+                             samples:Optional[List[str]]=None,
+                             aux_features:Dict=None):
+        import tensorflow as tf
+        from aliad.interface.tensorflow.dataset import ndarray_to_tfrecords
+        samples = self.resolve_samples(samples)
+        writer = tf.io.TFRecordWriter(outname)
+        metadata = {'features': None, 'sample_size': {}}
+        self.stdout.info(f'Created TFRecordWriter for the output "{outname}"')
+        for sample in samples:
+            self.stdout.info(f'Writing to tfrecord for the sample "{sample}"')
+            self.load(filenames, samples=[sample])
+            if aux_features is not None:
+                aux_features_ = aux_features[sample]
+            else:
+                aux_features_ = {}
+            metadata_ = ndarray_to_tfrecords(writer, **self.X, label=self.y, weight=self.weight,
+                                             **aux_features_)
+            metadata['features'] = metadata_['features']
+            metadata['sample_size'][sample] = metadata_['size']
+            self.clear()
+        metadata_outname = f'{os.path.splitext(outname)[0]}_metadata.json'
+        with open(metadata_outname, 'w') as f:
+            json.dump(metadata, f, indent=2)
+            self.stdout.info(f'Saved tfrecord metadata to "{metadata_outname}"')
+            
     def set_class_labels(self, class_labels:Dict):
         class_labels = combine_dict(class_labels)
         label_map = {}
@@ -96,18 +122,18 @@ class PointCloudDataset(AbstractObject):
         else:
             raise ValueError('filenames must be a string or a dictionary')
 
-    def clear_cache(self):
-        self.cache_arrays = None
-        self.cache_sample_arrays = None
+    def resolve_samples(self, samples:Optional[List[str]]=None):
+        if samples is None:
+            samples = list(self.label_map)
+        return samples
         
     def load(self, filenames:Union[Dict, str], samples:Optional[List[str]]=None):
-        self.clear_cache()
+        self.clear()
         features = {}
         labels = []
         masks  = []
         np.random.seed(self.seed)
-        if samples is None:
-            samples = list(self.label_map)
+        samples = self.resolve_samples(samples)
         class_sizes = {}
         for sample in samples:
             if sample not in self.label_map:
@@ -199,9 +225,27 @@ class PointCloudDataset(AbstractObject):
             weights[mask] /= size
         labels = np.expand_dims(labels, axis=-1)
         weights = np.expand_dims(weights, axis=-1)
+
+        feature_metadata = {}
+        for label, value in features.items():
+            feature_metadata[label] = {
+                'shape': value.shape[1:],
+                'dtype': value.dtype.name
+            }
+        feature_metadata['label'] = {
+            'shape': labels.shape[1:],
+            'dtype': 'int64'
+        }
+        feature_metadata['weight'] = {
+            'shape': weights.shape[1:],
+            'dtype': 'float32'
+        }
+        
         self._features = features
         self._labels = labels
         self._weights = weights
+        self._feature_metadata = feature_metadata
+
         self.clear_cache()
 
     @property
@@ -220,8 +264,27 @@ class PointCloudDataset(AbstractObject):
     def masks(self):
         return self.features.get('part_masks', None)
 
+    @property
+    def feature_metadata(self):
+        return self._feature_metadata
+        
+    def clear_cache(self):
+        self.cache_arrays = None
+        self.cache_sample_arrays = None
+        
     def clear(self):
         self._features = None
         self._labels   = None
         self._weights  = None
         self._masks    = None
+        self._feature_metadata = None
+        self.clear_cache()
+
+    def get_tf_inputs(self):
+        if self.feature_metadata is None:
+            return None
+        from tensorflow.keras import Input
+        inputs = {}
+        for label, metadata in self.feature_metadata.items():
+            inputs[label] = Input(name=label, **metadata)
+        return inputs
