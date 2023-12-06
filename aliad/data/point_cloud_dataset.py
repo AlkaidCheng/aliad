@@ -1,4 +1,5 @@
 import os
+import glob
 import json
 from typing import Dict, List, Optional, Union
 import numpy as np
@@ -54,12 +55,12 @@ class PointCloudDataset(AbstractObject):
         for sample in samples:
             self.stdout.info(f'Writing to tfrecord for the sample "{sample}"')
             self.load(filenames, samples=[sample])
+            features = {**self.X}
+            features['label']  = self.y
+            features['weight'] = self.weight
             if aux_features is not None:
-                aux_features_ = aux_features[sample]
-            else:
-                aux_features_ = {}
-            metadata_ = ndarray_to_tfrecords(writer, **self.X, label=self.y, weight=self.weight,
-                                             **aux_features_)
+                features.update(aux_features[sample])
+            metadata_ = ndarray_to_tfrecords(writer, **features)
             metadata['features'] = metadata_['features']
             metadata['sample_size'][sample] = metadata_['size']
             self.clear()
@@ -104,9 +105,21 @@ class PointCloudDataset(AbstractObject):
 
     def _load_sample_data(self, filenames:Union[Dict, str], sample:str):
         def _load_file(filename:str):
-            self.stdout.info(f'Loading dataset from "{filename}"')
-            return ak.from_parquet(filename)
-        if isinstance(filenames, str):
+            if isinstance(filename, list):
+                paths = [p for fname in filename for p in glob.glob(fname)]
+            else:
+                paths = glob.glob(filename)
+            self.stdout.info(f'Loading dataset from "{paths}"')
+            ext = [os.path.splitext(path)[-1] for path in paths]
+            if len(set(ext)) > 1:
+                raise ValueError('can not load dataset in mixed file format')
+            ext = ext[0]
+            if ext == '.parquet':
+                return ak.from_parquet(filename)
+            elif ext == '.feather':
+                return ak.from_feather(filename, memory_map=True)
+            raise ValueError(f'unsupported file format: {ext}')
+        if isinstance(filenames, (list, str)):
             if (self.cache_arrays is not None):
                 if sample not in ak.fields(self.cache_arrays):
                     raise RuntimeError(f'dataset does not contain the sample "{sample}"')
