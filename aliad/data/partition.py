@@ -42,7 +42,7 @@ def optimize_fraction_partition(total, fractions:np.ndarray,
     if sum_frt > 1:
         raise ValueError('sum of fractions must not exceed 1')
     if not (fractions > 0).all():
-        raise ValueError('all fractions must be positibe')
+        raise ValueError('all fractions must be positive')
     exp_total = min(round(sum_frt * total), total)
     trial_sizes = np.round(total * fractions).astype(int)
     trial_total = np.sum(trial_sizes)
@@ -84,7 +84,7 @@ def optimize_split_sizes(total_count:int,
     sizes = np.array(sizes)
     all_frt = ((sizes > 0) & (sizes < 1)).all()
     if not all_frt:
-        raise ValueError('Sizes must be all integers or all fractions')
+        raise ValueError('sizes must be all integers or all fractions')
     sum_frt = np.sum(sizes)
     if sum_frt > 1:
         raise ValueError('sum of split fractions must not exceed 1')
