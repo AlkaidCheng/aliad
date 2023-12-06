@@ -187,7 +187,7 @@ def tfds_to_tfrecords(ds, writer:"tf.io.TFRecordWriter"):
                 raise RuntimeError(f'input with label "{label}" is not a tensor')
             metadata[label] = {'shape': tensor.shape.as_list(), 'dtype': tensor.dtype.name}
         return metadata
-    metadata = _validate_arrays(**ds_first)
+    feature_metadata = _validate_arrays(**ds_first)
     feature_methods = {}
     for label, tensor in ds_first.items():
         feature_methods[label] = get_feature_method(tensor.numpy())
@@ -201,7 +201,10 @@ def tfds_to_tfrecords(ds, writer:"tf.io.TFRecordWriter"):
         serialized = example.SerializeToString()
         writer.write(serialized)
         size += 1
-    metadata['size'] = size
+    metadata = {
+        "features": feature_metadata,
+        "size": size
+    }
     return metadata
         
 
@@ -209,8 +212,9 @@ def ndarray_to_tfrecords(writer:"tf.io.TFRecordWriter", **X):
     if isinstance(writer, str):
         writer = tf.io.TFRecordWriter(writer)
     def _make_proper_array(label, x_):
-        if x_.ndim < 2:
-            raise ValueError(f'invalid input "{label}": must be ndarray of dimension >= 2')
+        if x_.ndim == 1:
+            print(f'Warning: array "{label}" of dimension = 1 will be reshaped to dimension 2')
+            x_ = x_.reshape((x_.shape[0], 1))
         shape = x_.shape[1:]
         dtype_ = x_.dtype.name
         if x_.ndim > 2:
