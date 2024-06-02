@@ -8,8 +8,6 @@ import awkward as ak
 from quickstats import AbstractObject, semistaticmethod
 from quickstats.utils.common_utils import combine_dict
 
-from aliad.interface.awkward.utils import get_record_outer_shapes
-
 class PointCloudDataset(AbstractObject):
     """
     This loader will load data in memory. Improvements to be made to load lazily.
@@ -45,29 +43,77 @@ class PointCloudDataset(AbstractObject):
 
     def convert_to_tfrecords(self, filenames:Union[Dict, str], outname:str,
                              samples:Optional[List[str]]=None,
-                             aux_features:Dict=None):
+                             aux_features:Dict=None,
+                             num_shards:Optional[int]=None,
+                             cache:bool=True):
+        """
+        """
         import tensorflow as tf
-        from aliad.interface.tensorflow.dataset import ndarray_to_tfrecords
+        from aliad.interface.tensorflow.dataset import array_to_tfrecords
+        from aliad.data.partition import get_partition_ranges
+        
         samples = self.resolve_samples(samples)
-        writer = tf.io.TFRecordWriter(outname)
-        metadata = {'features': None, 'sample_size': {}}
-        self.stdout.info(f'Created TFRecordWriter for the output "{outname}"')
-        for sample in samples:
-            self.stdout.info(f'Writing to tfrecord for the sample "{sample}"')
+
+        def save_metadata(metadata:Dict, outname:str, indent:int=2):
+            with open(outname, 'w') as f:
+                json.dump(metadata, f, indent=indent)
+
+        def get_metadata_outname(tfrecord_outname:str):
+            return f'{os.path.splitext(tfrecord_outname)[0]}_metadata.json'
+
+        def get_features(sample:str):
             self.load(filenames, samples=[sample])
             features = {**self.X}
             features['label']  = self.y
             features['weight'] = self.weight
-            if aux_features is not None:
+            if (aux_features is not None) and (sample in aux_features):
                 features.update(aux_features[sample])
-            metadata_ = ndarray_to_tfrecords(writer, **features)
-            metadata['features'] = metadata_['features']
-            metadata['sample_size'][sample] = metadata_['size']
-            self.clear()
-        metadata_outname = f'{os.path.splitext(outname)[0]}_metadata.json'
-        with open(metadata_outname, 'w') as f:
-            json.dump(metadata, f, indent=2)
-            self.stdout.info(f'Saved tfrecord metadata to "{metadata_outname}"')
+            return features
+            
+        if (num_shards is None):
+            metadata_outname = get_metadata_outname(outname)
+            if cache and os.path.exists(metadata_outname):
+                self.stdout.info(f'Cached TFRecord output from "{outname}"')
+                return None
+            writer = tf.io.TFRecordWriter(outname)
+            metadata = {}
+            metadata['sample_size'] = {}
+            metadata['size'] = 0
+            self.stdout.info(f'Creating TFRecord data for the sample "{sample}"')
+            for sample in samples:
+                features = get_features(sample)
+                sample_metadata = array_to_tfrecords(writer, **features)
+                metadata['featues'] = sample_metadata['features']
+                metadata['sample_size'][sample] = sample_metadata['size']
+                metadata['size'] += sample_metadata['size']
+                self.clear()
+            save_metadata(metadata, metadata_outname)
+            writer.close()
+        else:
+            if len(samples) > 1:
+                raise ValueError('num_shards option not allowed when number of samples > 1')
+            if '{shard_index}' not in outname:
+                tokens = os.path.splitext(outname)
+                outname = f"{tokens[0]}_shard_{{shard_index}}{tokens[1]}"
+            outnames = [outname.format(shard_index=i) for i in range(num_shards)]
+            metadata_outnames = [get_metadata_outname(outname) for outname in outnames]
+            if all(os.path.exists(filename) for filename in metadata_outnames):
+                self.stdout.info(f'Cached TFRecord output from "{outname}"')
+                return None
+            sample = samples[0]
+            self.stdout.info(f'Creating TFRecord data for the sample "{sample}"')
+            features = get_features(sample)
+            sample_size = features['label'].shape[0]
+            partition_ranges = get_partition_ranges(sample_size, num_shards)
+            silent_flag = False
+            for index, prange in enumerate(partition_ranges):
+                part_features = {key:arrays[prange[0]:prange[1]] for key, arrays in features.items()}
+                writer = tf.io.TFRecordWriter(outnames[index])
+                metadata = array_to_tfrecords(writer, silent=silent_flag,
+                                              **part_features)
+                silent_flag = True
+                metadata["sample_size"] = {sample: sample_size}
+                save_metadata(metadata, metadata_outnames[index])
             
     def set_class_labels(self, class_labels:Dict):
         class_labels = combine_dict(class_labels)
@@ -180,8 +226,8 @@ class PointCloudDataset(AbstractObject):
                     jet_key = f'j{i}'
                     feature_arrays = []
                     mask_array = None
+                    self.stdout.info(f'Loading data for the features {", ".join(columns)}')
                     for column in columns:
-                        self.stdout.info(f'Loading data for the feature "{column}"')
                         arrays = sample_arrays[jet_key][column]
                         if self.is_ragged(arrays):
                             # only get the mask once per jet

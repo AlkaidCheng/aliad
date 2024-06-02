@@ -45,6 +45,8 @@ setup(
     ],
     install_requires=[
           'numpy',
+          'scipy',
+          'numba',
           'pandas',
           'matplotlib',
           'click',
