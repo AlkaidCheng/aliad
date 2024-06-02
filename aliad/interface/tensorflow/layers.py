@@ -4,6 +4,7 @@ import tensorflow as tf
 
 from tensorflow.keras.layers import (BatchNormalization, Activation,
                                      Conv2D, Conv3D, Dense, Dropout)
+from tensorflow.keras.initializers import GlorotNormal
 
 from .operations import (transpose_last_n_dimensions, trim_elements,
                          generate_batch_indices, merge_dimensions)
@@ -104,6 +105,7 @@ def EdgeConv(points, features,
              activation:str='relu',
              pooling:str='average',
              name:str='EdgeConv',
+             seed:Optional[int]=None,
              conv_type:str='3D'):
     """
     Args
@@ -143,7 +145,7 @@ def EdgeConv(points, features,
             x = conv_fn(channel, kernel_size=kernal_size, strides=1,
                         data_format='channels_last',
                         use_bias=use_bias,
-                        kernel_initializer='glorot_normal',
+                        kernel_initializer=GlorotNormal(seed),
                         name=f'{name}_conv{idx}')(x)
             if batchnorm:
                 x = BatchNormalization(name=f'{name}_bn{idx}')(x)
@@ -159,7 +161,7 @@ def EdgeConv(points, features,
         sc = conv_fn(channels[-1], kernel_size=kernal_size, strides=1,
                      data_format='channels_last',
                      use_bias=use_bias,
-                     kernel_initializer='glorot_normal',
+                     kernel_initializer=GlorotNormal(seed),
                      name=f'{name}_sc_conv')(tf.expand_dims(features, axis=-2))
         if batchnorm:
             sc = BatchNormalization(name=f'{name}_sc_bn')(sc)

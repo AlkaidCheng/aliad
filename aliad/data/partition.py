@@ -9,6 +9,13 @@ def split_array(array, num_samples):
         return None, array
     return array[:num_samples], array[num_samples:]
 
+def get_partition_ranges(n:int, m:int, drop_remainer:bool=False):
+    k = math.floor(n / m)
+    ranges = list(zip(range(0, n , k), range(k, n + 1, k)))
+    if not drop_remainer:
+        ranges[-1] = (ranges[-1][0], n)
+    return ranges
+
 def get_optimal_stratified_split(split_sizes:Dict, cls_sizes:Dict):
     def is_all_int(sizes_):
         return all(isinstance(size, Integral) for size in sizes_)
@@ -73,9 +80,14 @@ def optimize_fraction_partition(total, fractions:np.ndarray,
     return trial_sizes
 
 def optimize_split_sizes(total_count:int,
-                         split_sizes:Dict, 
+                         split_sizes:Union[Dict, List], 
                          backfill:bool=False):
-    sizes = list(split_sizes.values())
+    
+    if isinstance(split_sizes, dict):
+        sizes = list(split_sizes.values())
+    else:
+        sizes = list(split_sizes)
+        
     all_int = all(isinstance(size, Integral) for size in sizes)
     if all_int:
         if np.sum(sizes) > total_count:
@@ -89,7 +101,9 @@ def optimize_split_sizes(total_count:int,
     if sum_frt > 1:
         raise ValueError('sum of split fractions must not exceed 1')
     opt_sizes = optimize_fraction_partition(total_count, sizes, backfill=backfill)
-    return dict(zip(list(split_sizes), opt_sizes))
+    if isinstance(split_sizes, dict):
+        return dict(zip(list(split_sizes), opt_sizes))
+    return opt_sizes
 
 def get_train_val_test_split_sizes(total_size:int, test_size=None, val_size=None, train_size=None):
     split_sizes = {
@@ -113,6 +127,8 @@ def get_split_indices(total_size:int, split_sizes:Union[int, Dict], stratify=Non
     if isinstance(split_sizes, (list, tuple)):
         split_sizes = {i: size for i, size in enumerate(split_sizes)}
     split_sizes_ = np.array(list(split_sizes.values()))
+    if np.any(split_sizes_ <= 0):
+        raise ValueError('split sizes must be positive')
     if not np.issubdtype(split_sizes_.dtype, np.integer):
         raise ValueError('split sizes must be all integers')
     total_split_size = np.sum(split_sizes_)
