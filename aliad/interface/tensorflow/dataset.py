@@ -146,6 +146,11 @@ def feature_selector(inner_slices:List[str], outer_slices:List[str]):
         return tuple(X[ins] for ins in inner_slices), *(X[outs] for outs in outer_slices)
     return map_fn
 
+def get_dtype_str(dtype):
+    if isinstance(dtype, str):
+        return dtype
+    return dtype.name
+
 def get_symbolic_inputs(metadata_map:Dict, downcast:bool=False,
                         keys:Optional[List[str]]=None):
     """symbolic tensor or placeholders"""
@@ -169,9 +174,10 @@ def get_tfrecord_array_parser(feature_metadata:Dict, downcast:bool=False,
     for label, input_ in inputs.items():
         feature_description[label] = get_feature_description(input_)
         dtype = input_.dtype
+        dtype_str = get_dtype_str(dtype)
         shape = input_.shape[1:]
-        if dtype.name in ['bool', 'float64']:
-            if downcast and dtype.name == 'float64':
+        if dtype_str in ['bool', 'float64']:
+            if downcast and dtype_str == 'float64':
                 feature_parser[label] = (lambda example, shape=shape:
                                          tf.cast(tf.reshape(tf.io.decode_raw(example, out_type='float64'), shape), dtype='float32'))
             else:
@@ -200,7 +206,7 @@ def tfds_to_tfrecords(ds, writer:"tf.io.TFRecordWriter"):
         for label, tensor in X_.items():
             if not isinstance(tensor, tf.Tensor):
                 raise RuntimeError(f'input with label "{label}" is not a tensor')
-            metadata[label] = {'shape': tensor.shape.as_list(), 'dtype': tensor.dtype.name}
+            metadata[label] = {'shape': tensor.shape.as_list(), 'dtype': get_dtype_str(tensor.dtype)}
         return metadata
     feature_metadata = _validate_arrays(**ds_first)
     feature_methods = {}
@@ -222,11 +228,11 @@ def tfds_to_tfrecords(ds, writer:"tf.io.TFRecordWriter"):
     }
     return metadata
 
-def get_feature_description(array:tf.Tensor):
-    dtype_ = array.dtype.name
-    if dtype_ in ['float32', 'int64']:
-        return tf.io.FixedLenFeature([np.prod(array.shape[1:])], dtype=dtype_)
-    elif dtype_ in ['float64', 'bool']:
+def get_feature_description(array: tf.Tensor):
+    dtype_str = get_dtype_str(array.dtype)
+    if dtype_str in ['float32', 'int64']:
+        return tf.io.FixedLenFeature([np.prod(array.shape[1:])], dtype=array.dtype)
+    elif dtype_str in ['float64', 'bool']:
         return tf.io.FixedLenFeature([], dtype=tf.string)
     else:
         raise ValueError('array must have dtype of float32, float64, or int64')
@@ -281,7 +287,7 @@ def int64_feature(array: np.ndarray) -> tf.train.Feature:
 
 def get_feature_method(array:np.ndarray):
     """Match appropriate tf.train.Feature class with dtype of an array. """
-    dtype = array.dtype.name
+    dtype_str = get_dtype_str(array.dtype)
     if dtype in ['float32']:
         # note FloatList converts float/double to float
         return float_feature
@@ -316,7 +322,7 @@ def write_tfrecord(writer: tf.io.TFRecordWriter, **X: Any) -> Dict[str, Any]:
         # contract to 2D, will be reshaped after decoding
         if x.ndim > 2:
             x = x.reshape((x.shape[0], np.prod(x.shape[1:])))
-        dtype = x.dtype.name
+        dtype_str = get_dtype_str(x.dtype)
         if dtype not in ['float32', 'float64', 'bool', 'int64']:
             raise ValueError('Array must have dtype of float32, float64, bool or int64')
         feature_metadata = {"shape": shape, "dtype": dtype}

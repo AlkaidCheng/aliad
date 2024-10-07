@@ -5,7 +5,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score, roc_curve, log_loss, auc
 
 from quickstats import AbstractObject
-from aliad.components.metrics import significance, max_significance, threshold_significance
+from aliad.components.metrics import significance, threshold_significance, negative_log_likelihood, nll, prior_ratio
 
 class ModelOutput(AbstractObject):
 
@@ -114,15 +114,6 @@ class ModelOutput(AbstractObject):
             return s / b
         return self._retrieve_metrics('s_over_b', get_s_over_b, cache=cache,
                                       **kwargs)
-
-    def s_over_b(self, cache:bool=True, **kwargs):
-        kwargs = self._update_kwargs(['y_true'], kwargs)
-        def get_s_over_b(y_true):
-            s = np.sum(y_true == 1)
-            b = np.sum(y_true == 0)
-            return s / b
-        return self._retrieve_metrics('s_over_b', get_s_over_b, cache=cache,
-                                      **kwargs)
         
     def s_over_sqrt_b(self, cache:bool=True, **kwargs):
         kwargs = self._update_kwargs(['y_true'], kwargs)
@@ -138,6 +129,17 @@ class ModelOutput(AbstractObject):
         return self._retrieve_group_metrics(['fpr', 'tpr', 'thresholds'],
                                             roc_curve, cache=cache,
                                             **kwargs)
+
+    def negative_log_likelihood(self, cache:bool=True, **kwargs):
+        kwargs = self._update_kwargs(['y_true', 'y_score', 'sample_weight'], kwargs)
+        kwargs['y_pred'] = kwargs.pop('y_score')
+        return self._retrieve_metrics('negative_log_likelihood', negative_log_likelihood,
+                                      cache=cache, **kwargs)
+
+    def nll(self, cache:bool=True, **kwargs):
+        kwargs = self._update_kwargs(['y_true', 'y_score', 'sample_weight'], kwargs)
+        kwargs['y_pred'] = kwargs.pop('y_score')
+        return self._retrieve_metrics('nll', nll, cache=cache, **kwargs)
         
     def log_loss(self, cache:bool=True, **kwargs):
         kwargs = self._update_kwargs(['y_true', 'y_score', 'sample_weight'], kwargs)
@@ -171,3 +173,8 @@ class ModelOutput(AbstractObject):
         fpr, tpr, thresholds = self.roc_curve(cache=cache, **kwargs)
         return self._retrieve_cond_metrics('threshold_significance', threshold_significance, cache=cache,
                                            cond=fpr_thres, tpr=tpr, fpr=fpr, fpr_thres=fpr_thres)
+
+    def prior_ratio(self, cache:bool=True, **kwargs):
+        kwargs = self._update_kwargs(['y_true', 'y_score', 'sample_weight'], kwargs)
+        kwargs['y_pred'] = kwargs.pop('y_score')
+        return self._retrieve_metrics('prior_ratio', prior_ratio, cache=cache, **kwargs)

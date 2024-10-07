@@ -1,4 +1,7 @@
-from typing import Optional, Union, Type, Dict, Tuple, List
+from typing import Optional, Union, Type, Dict, Tuple, List, Any
+from numbers import Number
+
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras.layers import Layer
 
@@ -47,3 +50,13 @@ def parse_layer_specs(layer_specs: List,
         layer = create_layer_from_spec(spec, default_layer=default_layer)
         layers.append(layer)
     return layers
+
+def assign_weight(weight: "tf.Variable", value: Any):
+    value = np.array(value)
+    if weight.shape != value.shape:
+        try:
+            value = value.reshape(weight.shape)
+        except ValueError:
+            raise ValueError(f'cannot assign a value of shape {value.shape} to '
+                             f'a weight of shape {weight.shape}')
+    weight.assign(value)
