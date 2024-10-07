@@ -2,8 +2,11 @@ from typing import Optional, Tuple, List
 
 import tensorflow as tf
 
-from tensorflow.keras.layers import (BatchNormalization, Activation,
-                                     Conv2D, Conv3D, Dense, Dropout)
+from tensorflow.keras.layers import (
+    BatchNormalization, Activation,
+    Conv2D, Conv3D, Dense, Dropout,
+    Layer
+)
 from tensorflow.keras.initializers import GlorotNormal
 
 from .operations import (transpose_last_n_dimensions, trim_elements,
