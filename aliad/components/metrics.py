@@ -36,3 +36,14 @@ def threshold_significance(tpr, fpr, fpr_thres:float, delta:float=0.0001,
     reduced_tpr_thres = reduce(tprs_thres)
     sig = reduced_tpr_thres / (fpr_thres ** 0.5)
     return sig
+
+def negative_log_likelihood(y_true, y_pred, sample_weight):
+    if sample_weight is None:
+        sample_weight = 1
+    # use sum not mean to get the correct scaling
+    return - np.sum(y_true * sample_weight * np.log(y_pred))
+
+nll = negative_log_likelihood
+
+def prior_ratio(y_true, y_pred, sample_weight=None):
+    return 1 / np.mean(y_pred / (1 - y_pred))
