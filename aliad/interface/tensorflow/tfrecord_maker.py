@@ -5,7 +5,7 @@ import json
 import numpy as np
 import tensorflow as tf
 
-from quickstats import AbstractObject, timer, VerbosePrint
+from quickstats import AbstractObject, timer, Logger
 from quickstats.utils.common_utils import execute_multi_tasks
 from quickstats.utils.string_utils import get_field_names
 from .dataset import write_tfrecord
@@ -85,7 +85,7 @@ class TFRecordMaker(AbstractObject):
     def run_instance(kwargs:Dict[str, Any]):
         filename = kwargs['filename']
         metadata_filename = kwargs['metadata_filename']
-        stdout = VerbosePrint(kwargs['verbosity'])
+        stdout = Logger(kwargs['verbosity'])
 
         data = kwargs['data']
         with tf.io.TFRecordWriter(filename) as writer:

@@ -293,10 +293,9 @@ class MetricsLogger(tf.keras.callbacks.Callback):
         self._logs = {
             self.EPOCH: []
         }
-        if self.save_batch:
-            self._logs[self.TRAIN] = []
-            self._logs[self.TEST] = []
-            self.reset_batch_data()
+        self._logs[self.TRAIN] = []
+        self._logs[self.TEST] = []
+        self.reset_batch_data()
 
     def reset_batch_data(self):
         """Resets the batch data storage for a new epoch."""
