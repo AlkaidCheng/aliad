@@ -7,7 +7,6 @@ import tensorflow as tf
 
 from tensorflow.keras import Input
 
-from quickstats import VerbosePrint
 from quickstats.utils.string_utils import get_field_names
 from aliad.data.partition import (
     get_split_indices, get_train_val_test_split_sizes,
@@ -288,12 +287,12 @@ def int64_feature(array: np.ndarray) -> tf.train.Feature:
 def get_feature_method(array:np.ndarray):
     """Match appropriate tf.train.Feature class with dtype of an array. """
     dtype_str = get_dtype_str(array.dtype)
-    if dtype in ['float32']:
+    if dtype_str in ['float32']:
         # note FloatList converts float/double to float
         return float_feature
-    elif dtype in ['float64', 'bool']:
+    elif dtype_str in ['float64', 'bool']:
         return bytes_feature
-    elif dtype in ['int64']:
+    elif dtype_str in ['int64']:
         return int64_feature
     else:  
         raise ValueError('array must have dtype of float32, float64, or int64')
@@ -323,9 +322,9 @@ def write_tfrecord(writer: tf.io.TFRecordWriter, **X: Any) -> Dict[str, Any]:
         if x.ndim > 2:
             x = x.reshape((x.shape[0], np.prod(x.shape[1:])))
         dtype_str = get_dtype_str(x.dtype)
-        if dtype not in ['float32', 'float64', 'bool', 'int64']:
+        if dtype_str not in ['float32', 'float64', 'bool', 'int64']:
             raise ValueError('Array must have dtype of float32, float64, bool or int64')
-        feature_metadata = {"shape": shape, "dtype": dtype}
+        feature_metadata = {"shape": shape, "dtype": dtype_str}
         return x, feature_metadata
 
     valid_X = {}
