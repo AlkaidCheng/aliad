@@ -110,6 +110,8 @@ class BackendMixin:
         >>> obj = ExampleBackend("tensorflow")
         >>> obj.set_backend("pytorch")  # Successfully switches if PyTorch is installed
         """
+        if backend not in self.BACKENDS:
+            raise ValueError(f"Invalid backend '{backend}'. Allowed backends: {self.BACKENDS}")
         self._validate_backend_exists(backend)
         self._validate_backend_version(backend)
         self.backend = backend
