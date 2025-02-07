@@ -19,6 +19,8 @@ __all__ = [
 class Activation(BackendMixin, ConfigMixin):
     """Base class for activation functions."""
 
+    BACKENDS = {"python", "tensorflow", "pytorch"}
+
     BACKEND_REQUIRES = {
         "python": {"modules": ["numpy"]},
         "tensorflow": {
@@ -78,8 +80,6 @@ class InvertibleActivation(Activation):
 
 class Logistic(InvertibleActivation):
     """Logistic (sigmoid) activation function."""
-
-    BACKENDS = {"python", "tensorflow", "pytorch"}
 
     @cached_property
     def inverse(self) -> Activation:
