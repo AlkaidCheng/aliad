@@ -32,7 +32,8 @@ class Activation:
         Returns:
             numpy.ndarray: Activated values as numpy array
         """
-        return np.array(self.__call__(x))
+        value = np.array(self.__call__(x))
+        return float(value) if np.ndim(value) == 0 else value
 
     def get_inverse(self, x: Tensor) -> np.ndarray:
         return np.array(self.inverse.__call__(x))
