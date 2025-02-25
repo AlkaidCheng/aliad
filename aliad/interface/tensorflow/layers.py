@@ -1,6 +1,9 @@
 from typing import Optional, Tuple, List
 
 import tensorflow as tf
+from tensorflow.keras import Input, Model
+from tensorflow.keras.layers import Dense
+
 
 from tensorflow.keras.layers import (
     BatchNormalization, Activation,
@@ -175,3 +178,49 @@ def EdgeConv(points, features,
             return Activation(activation, name=f'{name}_sc_act')(x)
         else:
             return x
+
+
+def SingleParameterDense(
+    activation: str = 'linear',
+    kernel_initializer = None,
+    kernel_constraint = None,
+    kernel_regularizer = None,
+    trainable: bool = True,
+    name: Optional[str] = 'dense'
+):
+        """
+        Get a single parameter model.
+
+        Parameters
+        ----------------------------------------------------
+        activation : str
+            Activation function.
+        exponential : bool
+            Whether to apply exponential activation. Default is False.
+        kernel_initializer : keras.Initializer
+            Initializer for the kernel.
+        kernel_constraint : keras.Constraint
+            Constraint for the kernel.
+        kernel_regularizer : keras.Regularizer
+            Regularizer for the kernel.
+        trainable : bool
+            Whether the parameter is trainable. Default is True.
+        name : str
+            Name of the layer.
+
+        Returns
+        ----------------------------------------------------
+        model : Keras model
+            The single-parameter model.
+        """
+
+        inputs = Input(shape=(1,))
+        outputs = Dense(1, use_bias=False, activation=activation,
+                        kernel_initializer=kernel_initializer,
+                        kernel_constraint=kernel_constraint,
+                        kernel_regularizer=kernel_regularizer,
+                        name=name)(inputs)
+        model = Model(inputs=inputs, outputs=outputs)
+        if not trainable:
+            model.trainable = False
+        return model

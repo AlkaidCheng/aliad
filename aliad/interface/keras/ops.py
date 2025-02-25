@@ -1,11 +1,36 @@
-try:
+from ._internals import KERAS_VERSION
+
+# compatibility between keras 2 and 3
+if KERAS_VERSION > (3, 0, 0):
     from keras import ops
-    from keras.ops import convert_to_tensor
+    from keras.ops import (
+        add,
+        subtract,
+        matmul,
+        concatenate,
+        ones_like,
+        top_k,
+        convert_to_tensor,
+    )
     from keras.ops import slice as slice_op
-except ImportError:
+elif KERAS_VERSION > (2, 0, 0):
     from keras import backend as ops
-    from tensorflow import convert_to_tensor
     from tensorflow import slice as slice_op
+    from tensorflow import concat as concatenate
+    from tensorflow import (
+        matmul,
+        ones_like,
+        convert_to_tensor,
+    )
+    from tensorflow.math import (
+        add,
+        subtract,
+        top_k,
+    )
+else:
+    raise RuntimeError(
+        f"Unsupported Keras version: {keras_version}  (must be Keras 2 or Keras 3)"
+    )
 
 def transpose_last_n_dimensions(tensor, n: int):
     """

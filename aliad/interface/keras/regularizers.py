@@ -1,10 +1,15 @@
-from keras.regularizers import Regularizer
-try:
-    from keras import ops
-except ImportError:
-    from keras import backend as ops
+from typing import Dict, Any
 
-class MinMaxRegularizer(Regularizer):
+from keras.regularizers import Regularizer
+
+from quickstats.core.registries import get_registry, create_registry_metaclass
+
+from .ops import ops
+
+Registry = get_registry('keras.regularizers')
+RegistryMeta = create_registry_metaclass(Registry)
+
+class MinMaxRegularizer(Regularizer, metaclass=RegistryMeta):
     """
     Custom regularizer that penalizes weights falling outside a specified min-max range.
     
@@ -27,9 +32,11 @@ class MinMaxRegularizer(Regularizer):
     """
     
     def __init__(self, min_val: float, max_val: float, strength: float = 1.0, penalty_type: str = 'exponential') -> None:
+        penalty_type = penalty_type.strip("_")
         self.min_val = min_val
         self.max_val = max_val
         self.strength = strength
+        self.penalty_type = penalty_type
         
         if penalty_type == 'exponential':
             self.penalty_fn = self._exponential_penalty
@@ -79,6 +86,10 @@ class MinMaxRegularizer(Regularizer):
         penalty = self.strength * ops.sum(self.penalty_fn(x_under, x_over, x))
         return penalty
 
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]):
+        return cls(**config)
+
     def get_config(self) -> dict:
         """
         Return the configuration of the regularizer for serialization.
@@ -92,5 +103,5 @@ class MinMaxRegularizer(Regularizer):
             'min_val': float(self.min_val),
             'max_val': float(self.max_val),
             'strength': float(self.strength),
-            'penalty_type': self.penalty_fn.__name__.replace('_penalty', '')
+            'penalty_type': self.penalty_type
         }
