@@ -116,6 +116,16 @@ def threshold_sic(
     reduced_tpr_thres = reduce(tprs_thres)
     return reduced_tpr_thres / np.sqrt(fpr_thres)
 
+def prior_ratio(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    sample_weight: Optional[np.ndarray] = None
+) -> float:
+    if sample_weight is None:
+        sample_weight = 1
+    prior_ratio = 1 / np.mean(sample_weight * (y_pred / (1 - y_pred)))
+    return prior_ratio
+
 def negative_log_likelihood(
     y_true: np.ndarray,
     y_pred: np.ndarray,
