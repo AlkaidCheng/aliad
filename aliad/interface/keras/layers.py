@@ -2,37 +2,40 @@ from typing import Optional, Tuple, List, Union
 from numbers import Number
 
 import keras
-from keras import Input
+from keras import initializers, regularizers, constraints
+from keras import Input, Model
 from keras.layers import (
     Layer,
+    Dense,
     Conv2D,
     Conv3D,
     Activation,
     BatchNormalization
 )
-from keras.models import Model
-from keras.initializers import GlorotNormal
-from keras import initializers, regularizers, constraints
+from keras.initializers import (
+    GlorotNormal
+)
 
-try:
-    from keras import ops
-    from keras.ops import ones_like, top_k, add, subtract, matmul, concat
-except ImportError:
-    from keras.backend import ones_like
-    from keras import backend as ops
-    from tensorflow.math import top_k, add, subtract
-    from tensorflow import matmul, concat
-
-# to fix: keras does not have gather, gather_nd and one_hot yet
-import tensorflow as tf
-    
-from aliad.core.assertions import assert_range
 from .ops import (
+    ops,
+    add,
+    subtract,
+    matmul,
+    concatenate,
+    ones_like,
+    top_k,
+    convert_to_tensor,
     transpose_last_n_dimensions,
     trim_elements,
     merge_dimensions,
     generate_batch_indices
 )
+
+# to fix: keras does not have gather, gather_nd and one_hot yet
+import tensorflow as tf
+    
+from aliad.core.assertions import assert_range
+
 from .regularizers import MinMaxRegularizer
 
 class DMatrix(Layer):
@@ -518,3 +521,48 @@ class SemiWeakly(Layer):
     def call(self, inputs):
         # Perform element-wise multiplication of the input by the single weight
         return inputs * self.weight
+
+def SingleParameterDense(
+    activation: str = 'linear',
+    kernel_initializer = None,
+    kernel_constraint = None,
+    kernel_regularizer = None,
+    trainable: bool = True,
+    name: Optional[str] = 'dense'
+):
+        """
+        Get a single parameter model.
+
+        Parameters
+        ----------------------------------------------------
+        activation : str
+            Activation function.
+        exponential : bool
+            Whether to apply exponential activation. Default is False.
+        kernel_initializer : keras.Initializer
+            Initializer for the kernel.
+        kernel_constraint : keras.Constraint
+            Constraint for the kernel.
+        kernel_regularizer : keras.Regularizer
+            Regularizer for the kernel.
+        trainable : bool
+            Whether the parameter is trainable. Default is True.
+        name : str
+            Name of the layer.
+
+        Returns
+        ----------------------------------------------------
+        model : Keras model
+            The single-parameter model.
+        """
+
+        inputs = Input(shape=(1,))
+        outputs = Dense(1, use_bias=False, activation=activation,
+                        kernel_initializer=kernel_initializer,
+                        kernel_constraint=kernel_constraint,
+                        kernel_regularizer=kernel_regularizer,
+                        name=name)(inputs)
+        model = Model(inputs=inputs, outputs=outputs)
+        if not trainable:
+            model.trainable = False
+        return model

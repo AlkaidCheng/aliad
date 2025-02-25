@@ -9,7 +9,10 @@ from typing import Any, Optional, Union
 import numpy as np
 import tensorflow as tf
 
-from quickstats.utils.common_utils import NpEncoder
+from quickstats.utils.common_utils import (
+    NpEncoder,
+    list_of_dict_to_dict_of_list
+)
 
 class LearningRateScheduler(tf.keras.callbacks.Callback):
     """
@@ -25,17 +28,33 @@ class LearningRateScheduler(tf.keras.callbacks.Callback):
     def __init__(self, initial_lr=0.001, lr_decay_factor=0.5, patience=10, min_lr=1e-7, verbose=False):
         super(LearningRateScheduler, self).__init__()
         self.initial_lr = initial_lr
+        self.current_lr = None
         self.lr_decay_factor = lr_decay_factor
         self.patience = patience
         self.min_lr = min_lr
         self.verbose = verbose
         self.wait = 0
         self.best_loss = float('inf')
+        self.enabled = True
+
+    def disable(self) -> None:
+        self.enabled = False
+
+    def enable(self) -> None:
+        self.enabled = True
+
+    def reset(self) -> None:
+        self.current_lr = None
+        self.wait = 0
+        self.enabled = True
 
     def on_train_begin(self, logs=None):
-        tf.keras.backend.set_value(self.model.optimizer.lr, self.initial_lr)
+        lr = self.current_lr or self.initial_lr
+        tf.keras.backend.set_value(self.model.optimizer.lr, lr)
 
     def on_epoch_end(self, epoch, logs=None):
+        if not self.enabled:
+            return
         current_loss = logs.get('val_loss')
         if current_loss is None:
             return
@@ -50,6 +69,7 @@ class LearningRateScheduler(tf.keras.callbacks.Callback):
                 if self.verbose:
                     print(f"\nEpoch {epoch + 1}: Reducing learning rate to {new_lr}")
                 tf.keras.backend.set_value(self.model.optimizer.lr, new_lr)
+                self.current_lr = new_lr
                 self.wait = 0
                 self.best_loss = current_loss
 
@@ -440,48 +460,61 @@ class MetricsLogger(tf.keras.callbacks.Callback):
             if drop_first_batch:
                 df = df.loc[1:]
         return df
+
+    def get_epoch_history(self):
+        data = self._logs.get('epoch', [])
+        return list_of_dict_to_dict_of_list(data)
     
 class EarlyStopping(tf.keras.callbacks.EarlyStopping):
-
     def __init__(
         self,
         *args,
-        interrupt_freq:Optional[int]=None,
+        interrupt_freq: Optional[int] = None,
+        always_restore_best_weights: bool = False,  # Ensures best weights restoration even if training completes normally
         **kwargs
     ):
         super().__init__(*args, **kwargs)
         if (interrupt_freq) and (interrupt_freq <= 0):
-            raise ValueError('interrupt_freq can not be negative')
-        self.restore_config = {}
+            raise ValueError('interrupt_freq cannot be negative')
+        self.restore_config = {}  # ✅ Keeps restore configuration for external state restoration
         self.interrupt_freq = interrupt_freq
         self.interrupted = False
+        self.resumed = False
         self.initial_epoch = 0
         self.final_epoch = 0
-        
-    def restore(self,
-                model,
-                metrics_ckpt_filepath:str,
-                model_ckpt_filepath:str):
+        self.always_restore_best_weights = always_restore_best_weights  # New distinct flag
+
+    def resume(self):
+        self.wait = 0
+        self.stopped_epoch = 0
+        self.resumed = True
+
+    def restore(self, model, metrics_ckpt_filepath: str, model_ckpt_filepath: str):
+        """
+        Restore model weights from a checkpoint file using external metric tracking.
+        """
         epochs, metrics = self._get_metrics_ckpt_data(metrics_ckpt_filepath)
         if len(epochs) == 0:
             return None
+
         best_op = np.argmin if self.monitor_op == np.less else np.argmax
         best_idx = best_op(metrics)
         last_epoch = np.max(epochs)
         best_epoch = epochs[best_idx]
         best_metric = metrics[best_idx]
-        model_filepath = self._get_model_filepath(model_ckpt_filepath,
-                                                  epoch=best_epoch)
+
+        # Load best weights from external checkpoint
+        model_filepath = self._get_model_filepath(model_ckpt_filepath, epoch=best_epoch)
         model.load_weights(model_filepath)
         best_weights = model.get_weights()
         sys.stdout.write(f"[INFO] Found best metric value of {best_metric} from epoch {best_epoch}.\n")
+
+        # Load final epoch weights for comparison
         if best_epoch != last_epoch:
-            model_filepath = self._get_model_filepath(model_ckpt_filepath,
-                                                      epoch=last_epoch)
+            model_filepath = self._get_model_filepath(model_ckpt_filepath, epoch=last_epoch)
             model.load_weights(model_filepath)
-        sys.stdout.write(f"[INFO] Restored model weights at epoch {last_epoch}"
-                         f"{model_filepath}.\n")
-            
+        sys.stdout.write(f"[INFO] Restored model weights at epoch {last_epoch} {model_filepath}.\n")
+
         self.restore_config = {
             'wait': last_epoch - best_epoch,
             'best': best_metric,
@@ -490,43 +523,73 @@ class EarlyStopping(tf.keras.callbacks.EarlyStopping):
             'stopped_epoch': 0
         }
         self.initial_epoch = last_epoch + 1
-        
-    def _get_metrics_ckpt_data(self, metrics_ckpt_filepath:str):
+
+    def _get_metrics_ckpt_data(self, metrics_ckpt_filepath: str):
+        """
+        Load checkpointed metric values to determine the best epoch.
+        """
         path_wildcard = re.sub(r"{.*}", r"*", metrics_ckpt_filepath)
         ckpt_paths = glob.glob(path_wildcard)
         basename = os.path.basename(metrics_ckpt_filepath)
         basename_regex = re.compile("^" + re.sub(r"{.*}", r".*", basename) + "$")
         ckpt_paths = [path for path in ckpt_paths if basename_regex.match(os.path.basename(path))]
+
         epochs = []
-        metrics = []                          
+        metrics = []
         for ckpt_path in ckpt_paths:
             with open(ckpt_path, "r") as ckpt_file:
                 data = json.load(ckpt_file)
             epochs.append(data['epoch'])
             metrics.append(data[self.monitor])
+
         epochs = np.array(epochs)
         metrics = np.array(metrics)
         return epochs, metrics
-        
-    def _get_model_filepath(self, model_ckpt_filepath:str, epoch:int):
-        filepath = model_ckpt_filepath.format(epoch=epoch+1)
+
+    def _get_model_filepath(self, model_ckpt_filepath: str, epoch: int):
+        """
+        Generate the correct filepath for a given epoch checkpoint.
+        """
+        filepath = model_ckpt_filepath.format(epoch=epoch + 1)
         return filepath
 
     def on_train_begin(self, logs=None):
-        super().on_train_begin(logs)
+        """
+        Reset state and restore any previously saved training configuration.
+        """
+        if not self.resumed:
+            super().on_train_begin(logs)
         if self.restore_config:
-            self.__dict__.update(self.restore_config)
-            
+            self.__dict__.update(self.restore_config) 
+
     def on_epoch_end(self, epoch, logs=None):
+        """
+        Check if early stopping should be triggered or if training should be interrupted.
+        """
         super().on_epoch_end(epoch, logs=logs)
         self.final_epoch = epoch
-        if (self.interrupt_freq and 
-            ((epoch + 1 - self.initial_epoch) % self.interrupt_freq == 0)):
+        if self.interrupt_freq and ((epoch + 1 - self.initial_epoch) % self.interrupt_freq == 0):
             self.model.stop_training = True
             self.interrupted = True
 
+    def on_train_end(self, logs=None):
+        """
+        Ensures best weights are restored at the end of training if `always_restore_best_weights` is enabled,
+        even if early stopping did not trigger.
+        """
+        super().on_train_end(logs)
+        if self.always_restore_best_weights and self.best_weights is not None:
+            sys.stdout.write(
+                f"[INFO] Training completed without early stopping. Restoring best weights from epoch {self.best_epoch}.\n"
+            )
+            self.model.set_weights(self.best_weights)
+
     def reset(self):
+        """
+        Reset early stopping tracking state.
+        """
         if hasattr(self, 'model'):
             self.model.stop_training = False
         self.interrupted = False
         self.wait = 0
+        self.resumed = False

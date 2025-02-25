@@ -7,7 +7,12 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from quickstats import cached_import
+from quickstats.core.registries import get_registry, create_registry_metaclass
+
 from aliad.core.mixins import BackendMixin, ConfigMixin
+
+Registry = get_registry('aliad.activations')
+RegistryMeta = create_registry_metaclass(Registry)
 
 EPSILON = 1E-7
 
@@ -16,7 +21,7 @@ __all__ = [
     "Exponential", "Log", "Scale", "Linear"
 ]
 
-class Activation(BackendMixin, ConfigMixin):
+class Activation(BackendMixin, ConfigMixin, metaclass=RegistryMeta):
     """Base class for activation functions."""
 
     BACKENDS = {"python", "tensorflow", "pytorch"}
@@ -45,7 +50,7 @@ class Activation(BackendMixin, ConfigMixin):
     def _set_backend_ops(self):
         """Load backend-specific operations (e.g., keras_ops for TensorFlow)."""
         if self.backend == "tensorflow":
-            from aliad.interface.keras import keras_ops
+            from aliad.interface.keras.ops import ops as keras_ops
             self.keras_ops = keras_ops
         else:
             self.__dict__.pop("keras_ops", None)
@@ -57,14 +62,31 @@ class Activation(BackendMixin, ConfigMixin):
     def get_config(self) -> Dict[str, Any]:
         return {"backend": self.backend}
 
+    def _cast_python(self, x: Any, *args, **kwargs) -> Union[float, np.ndarray]:
+        if np.ndim(x) == 0:
+            return float(x)
+        return np.asarray(x, dtype=np.float64)
+
+    def _cast_tensorflow(self, x: Any, *args, **kwargs) -> "Tensor":
+        tf = cached_import('tensorflow')
+        return tf.convert_to_tensor(x, dtype=tf.float32)
+
+    def _cast_pytorch(self, x: Any, *args, **kwargs) -> "Tensor":
+        torch = cached_import('torch')
+        return torch.as_tensor(x)
+
+    def cast(self, x: Any, *args, **kwargs) -> Any:
+        return self._backend_dispatch("cast", x, *args, **kwargs)
+
     @classmethod
     def from_config(cls, config: Dict[str, Any]):
         return cls(**config)
 
-    def __call__(self, x: Any) -> Any:
+    def __call__(self, x: Any, *args, **kwargs) -> Any:
         """Applies the activation function."""
-        return self.get_value(x)
+        return self.get_value(x, *args, **kwargs)
 
+Registry.remove('Activation')
 
 class InvertibleActivation(Activation):
     """Activation function with an invertible transformation."""
@@ -73,27 +95,35 @@ class InvertibleActivation(Activation):
     def inverse(self) -> Activation:
         raise NotImplementedError("Inverse function not implemented")
 
-    def get_inverse(self, x: Any) -> Any:
+    def get_inverse(self, x: Any, *args, **kwargs) -> Any:
         """Apply the inverse activation function."""
-        return self.inverse.get_value(x)
+        return self.inverse.get_value(x, *args, **kwargs)
 
+class DifferentiableActivation(Activation):
+    """Activation function with a differentiable transformation."""
 
-class Logistic(InvertibleActivation):
+    def get_derivative(self, x: Any, *args, **kwargs) -> Any:
+        return self._backend_dispatch("get_derivative", x, *args, **kwargs)
+        
+Registry.remove('InvertibleActivation')
+
+class Logistic(InvertibleActivation, DifferentiableActivation):
     """Logistic (sigmoid) activation function."""
+
+    __registry_aliases__ = ['Sigmoid']
 
     @cached_property
     def inverse(self) -> Activation:
         return Logit(backend=self.backend)
 
     def _get_value_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
+        x = self.cast(x)
         if np.ndim(x) == 0:
-            x = float(x)
             if x >= 0:
                 return 1 / (1 + math.exp(-x))
             exp_x = math.exp(x)
             return exp_x / (1 + exp_x)
 
-        x = np.asarray(x, dtype=np.float64)
         pos_mask = x >= 0
         exp_x = np.exp(x)
 
@@ -105,15 +135,17 @@ class Logistic(InvertibleActivation):
 
     def _get_value_pytorch(self, x: "Tensor") -> "Tensor":
         torch = cached_import('torch')
-        x = torch.as_tensor(x)
+        x = self.cast(x)
         return torch.sigmoid(x)
 
+    def get_derivative(self, x: Any) -> Any:
+        sigma = self.get_value(x)
+        return sigma * (1 - sigma)
 
 # Alias for Logistic
 Sigmoid = Logistic
 
-
-class Logit(InvertibleActivation):
+class Logit(InvertibleActivation, DifferentiableActivation):
     """Logit function (inverse of sigmoid)."""
 
     @cached_property
@@ -121,23 +153,31 @@ class Logit(InvertibleActivation):
         return Logistic(backend=self.backend)
 
     def _get_value_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
+        x = self.cast(x)
+        x = np.clip(x, EPSILON, 1 - EPSILON)
+        
         if np.ndim(x) == 0:
-            x = float(x)
-            return math.log(x / (1 - x + EPSILON))
+            return math.log(x / (1 - x))
 
-        x = np.asarray(x, dtype=np.float64)
-        return np.log(x / (1 - x + EPSILON))
+        return np.log(x / (1 - x))
 
     def _get_value_tensorflow(self, x: "Tensor") -> "Tensor":
-        return self.keras_ops.log(x / (1 - x + EPSILON))
+        tf = cached_import("tensorflow")
+        x = self.cast(x)
+        x = tf.clip_by_value(x, EPSILON, 1 - EPSILON)
+        return self.keras_ops.log(x / (1 - x))
 
     def _get_value_pytorch(self, x: "Tensor") -> "Tensor":
         torch = cached_import('torch')
-        x = torch.as_tensor(x)
-        return torch.log(x / (1 - x + EPSILON))
+        x = self.cast(x)
+        x = torch.clamp(x, min=EPSILON, max=1 - EPSILON)
+        return torch.log(x / (1 - x))
 
+    def get_derivative(self, x: Any) -> Callable:
+        x = self.cast(x)
+        return 1 / (x * (1 - x))
 
-class Exponential(InvertibleActivation):
+class Exponential(InvertibleActivation, DifferentiableActivation):
     """Exponential activation function."""
 
     @cached_property
@@ -145,20 +185,23 @@ class Exponential(InvertibleActivation):
         return Log(backend=self.backend)
 
     def _get_value_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
+        x = self.cast(x)
         if np.ndim(x) == 0:
-            return math.exp(float(x))
-        return np.exp(np.asarray(x, dtype=np.float64))
+            return math.exp(x)
+        return np.exp(x)
 
     def _get_value_tensorflow(self, x: "Tensor") -> "Tensor":
         return self.keras_ops.exp(x)
 
     def _get_value_pytorch(self, x: "Tensor") -> "Tensor":
         torch = cached_import('torch')
-        x = torch.as_tensor(x)
+        x = self.cast(x)
         return torch.exp(x)
 
+    def get_derivative(self, x: Any) -> Any:
+        return self.get_value(x)
 
-class Log(InvertibleActivation):
+class Log(InvertibleActivation, DifferentiableActivation):
     """Natural logarithm activation function."""
 
     @cached_property
@@ -166,20 +209,29 @@ class Log(InvertibleActivation):
         return Exponential(backend=self.backend)
 
     def _get_value_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
+        x = self.cast(x)
+        x = np.clip(x, EPSILON, None)
         if np.ndim(x) == 0:
-            return math.log(float(x) + EPSILON)
-        return np.log(np.asarray(x, dtype=np.float64) + EPSILON)
+            return math.log(x + EPSILON)
+        return np.log(x + EPSILON)
 
     def _get_value_tensorflow(self, x: "Tensor") -> "Tensor":
-        return self.keras_ops.log(x + EPSILON)
+        tf = cached_import("tensorflow")
+        x = self.cast(x)
+        x = tf.clip_by_value(x, EPSILON, float("inf"))
+        return self.keras_ops.log(x)
 
     def _get_value_pytorch(self, x: "Tensor") -> "Tensor":
         torch = cached_import('torch')
-        x = torch.as_tensor(x)
-        return torch.log(x + EPSILON)
+        x = self.cast(x)
+        x = torch.clamp(x, min=EPSILON)
+        return torch.log(x)
 
+    def get_derivative(self, x: Any) -> Any:
+        x = self.cast(x)
+        return 1 / x
 
-class Scale(InvertibleActivation):
+class Scale(InvertibleActivation, DifferentiableActivation):
     """Scaling activation function that multiplies input by a factor."""
 
     def __init__(self, factor: float = 1.0, *args, **kwargs):
@@ -196,36 +248,57 @@ class Scale(InvertibleActivation):
         config["factor"] = self._factor
         return config
 
+    def _get_value(self, x: ArrayLike) -> Any:
+        x = self.cast(x)
+        return x * self._factor
+
     def _get_value_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
-        if np.ndim(x) == 0:
-            return float(x) * self._factor
-        return np.asarray(x, dtype=np.float64) * self._factor
+        return self._get_value(x)
 
     def _get_value_tensorflow(self, x: "Tensor") -> "Tensor":
-        tf = cached_import('tensorflow')
-        return tf.convert_to_tensor(x) * self._factor
+        return self._get_value(x)
 
     def _get_value_pytorch(self, x: "Tensor") -> "Tensor":
+        return self._get_value(x)
+
+    def _get_derivative_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
+        return np.ones_like(x) * self._factor
+
+    def _get_derivative_tensorflow(self, x: "Tensor") -> "Tensor":
+        tf = cached_import('tensorflow')
+        return tf.ones_like(x) * self._factor
+
+    def _get_derivative_pytorch(self, x: "Tensor") -> "Tensor":
         torch = cached_import('torch')
-        return torch.as_tensor(x) * self._factor
+        return torch.ones_like(x) * self._factor
 
 
-class Linear(InvertibleActivation):
+class Linear(InvertibleActivation, DifferentiableActivation):
     """Linear activation function (identity function)."""
 
     @cached_property
     def inverse(self) -> Activation:
         return self
 
+    def _get_value(self, x: ArrayLike) -> Any:
+        return self.cast(x)
+
     def _get_value_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
-        if np.ndim(x) == 0:
-            return float(x)
-        return np.asarray(x, dtype=np.float64)
+        return self._get_value(x)
 
     def _get_value_tensorflow(self, x: "Tensor") -> "Tensor":
-        tf = cached_import('tensorflow')
-        return tf.convert_to_tensor(x)
+        return self._get_value(x)
 
     def _get_value_pytorch(self, x: "Tensor") -> "Tensor":
+        return self._get_value(x)
+
+    def _get_derivative_python(self, x: ArrayLike) -> Union[float, np.ndarray]:
+        return np.ones_like(x)
+
+    def _get_derivative_tensorflow(self, x: "Tensor") -> "Tensor":
+        tf = cached_import('tensorflow')
+        return tf.ones_like(x)
+
+    def _get_derivative_pytorch(self, x: "Tensor") -> "Tensor":
         torch = cached_import('torch')
-        return torch.as_tensor(x)
+        return torch.ones_like(x)

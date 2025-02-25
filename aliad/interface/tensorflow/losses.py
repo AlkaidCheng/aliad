@@ -3,6 +3,11 @@ import keras
 from keras import backend
 from keras.src.losses import LossFunctionWrapper
 
+from quickstats.core.registries import get_registry, create_registry_metaclass
+
+Registry = get_registry('keras.losses')
+RegistryMeta = create_registry_metaclass(Registry)
+
 def scaled_binary_crossentropy(
     y_true, y_pred, offset=0., scale=1., from_logits=False, label_smoothing=0.0, axis=-1
 ):
@@ -63,33 +68,20 @@ def scaled_negative_loglikelihood(
     """
     y_pred = tf.convert_to_tensor(y_pred)
     y_true = tf.cast(y_true, y_pred.dtype)
-    label_smoothing = tf.convert_to_tensor(label_smoothing, dtype=y_pred.dtype)
-
-    def _smooth_labels():
-        return y_true * (1.0 - label_smoothing) + 0.5 * label_smoothing
-
-    y_true = tf.__internal__.smart_cond.smart_cond(
-        label_smoothing, _smooth_labels, lambda: y_true
-    )
-
-    if from_logits:
-        return tf.nn.sigmoid_cross_entropy_with_logits(
-            labels=target, logits=output
-        )
 
     epsilon_ = tf.convert_to_tensor(backend.epsilon(), y_pred.dtype)
-    y_pred = tf.clip_by_value(y_pred, epsilon_, 1.0 - epsilon_)
+    #epsilon_ = tf.convert_to_tensor(backend.epsilon(), y_pred.dtype)
+    #y_pred = tf.clip_by_value(y_pred, epsilon_, 1.0 - epsilon_)
 
     # Compute cross entropy from probabilities.
     nll = - y_true * (tf.math.log(y_pred))
-    
-    return (backend.mean(
+    return (tf.math.reduce_sum(
         nll,
-        axis=axis,
-    ) + offset) * scale
+        axis=None,
+    )+ offset) * scale
 
 @keras.saving.register_keras_serializable(package="ScaledBinaryCrossentropy")
-class ScaledBinaryCrossentropy(LossFunctionWrapper):
+class ScaledBinaryCrossentropy(LossFunctionWrapper, metaclass=RegistryMeta):
     """
     Custom loss function that applies an offset and scaling to the binary cross-entropy loss.
 
@@ -150,7 +142,7 @@ class ScaledBinaryCrossentropy(LossFunctionWrapper):
         }
 
 @keras.saving.register_keras_serializable(package="ScaledMaximumLikelihood")
-class ScaledNLLLoss(LossFunctionWrapper):
+class ScaledNLLLoss(LossFunctionWrapper, metaclass=RegistryMeta):
     """
     Custom loss function that applies an offset and scaling to the negative log-likelihood loss.
 
@@ -173,11 +165,11 @@ class ScaledNLLLoss(LossFunctionWrapper):
         from_logits=False,
         label_smoothing=0.0,
         axis=-1,
-        reduction="sum_over_batch_size",
+        reduction="sum",
         name="scaled_maximum_likelihood",
     ):
         super().__init__(
-            scaled_maximum_likelihood,
+            scaled_negative_loglikelihood,
             name=name,
             offset=offset,
             scale=scale,
