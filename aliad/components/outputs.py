@@ -6,7 +6,7 @@ from quickstats import AbstractObject
 from quickstats.core.hashing import hash_dict
 from sklearn.metrics import accuracy_score, roc_curve, log_loss, auc
 
-from .metrics import sic, max_sic, threshold_sic, nll
+from .metrics import sic, max_sic, threshold_sic, nll, prior_ratio
 
 class ModelOutput(AbstractObject):
     """A class for computing and caching various model evaluation metrics.
@@ -422,6 +422,16 @@ class ModelOutput(AbstractObject):
         return self._retrieve(
             'nll',
             nll,
+            ['y_true', 'y_pred', 'sample_weight'],
+            **kwargs
+        )
+
+
+    def prior_ratio(self, **kwargs: Any) -> float:
+        kwargs = self._update_kwargs(['y_true', 'y_pred', 'sample_weight'], kwargs)
+        return self._retrieve(
+            'prior_ratio',
+            prior_ratio,
             ['y_true', 'y_pred', 'sample_weight'],
             **kwargs
         )
