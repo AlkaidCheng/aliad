@@ -119,12 +119,32 @@ def threshold_sic(
 def prior_ratio(
     y_true: np.ndarray,
     y_pred: np.ndarray,
+    y_mask: Optional[int] = 0,
     sample_weight: Optional[np.ndarray] = None
 ) -> float:
+    if y_mask is not None:
+        y_pred = y_pred[y_true == y_mask]
     if sample_weight is None:
         sample_weight = 1
-    prior_ratio = 1 / np.mean(sample_weight * (y_pred / (1 - y_pred)))
+    elif y_mask is not None:
+        sample_weight = sample_weight[y_true == y_mask]
+    likelihoods = sample_weight * y_pred / (1 - y_pred)
+    likelihoods = likelihoods[np.isfinite(likelihoods)]
+    prior_ratio = 1 / np.mean(likelihoods)
     return prior_ratio
+
+def mean_log_likelihood(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    y_mask: Optional[int] = None,
+    sample_weight: Optional[np.ndarray] = None
+) -> float:
+    if y_mask is not None:
+        y_pred = y_pred[y_true == y_mask]
+    if sample_weight is None:
+        sample_weight = 1
+    log_likelihoods = np.log(y_pred / (1 - y_pred))
+    return np.mean(sample_weight * log_likelihoods)
 
 def negative_log_likelihood(
     y_true: np.ndarray,
