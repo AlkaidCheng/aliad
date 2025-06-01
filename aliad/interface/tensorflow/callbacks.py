@@ -4,7 +4,8 @@ import sys
 import glob
 import json
 from operator import itemgetter
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Dict, Tuple
+from collections import defaultdict
 
 import numpy as np
 import tensorflow as tf
@@ -13,6 +14,9 @@ from quickstats.utils.common_utils import (
     NpEncoder,
     list_of_dict_to_dict_of_list
 )
+from quickstats import DescriptiveEnum
+
+from aliad.components.callbacks import LoggerSaveMode
 
 class LearningRateScheduler(tf.keras.callbacks.Callback):
     """
@@ -88,101 +92,166 @@ class BatchMetricsCallback(tf.keras.callbacks.Callback):
         if logs:
             self.batch_val_metrics.append(logs.copy())
 
-class WeightsLogger(tf.keras.callbacks.Callback):
 
-    BATCH = 'batch'
-    EPOCH = 'epoch'
+class BaseLogger(tf.keras.callbacks.Callback):
 
-    SUBDIRS = {
-        BATCH : 'batch_weights',
-        EPOCH : 'epoch_weights'
-    }   
-    
+    BATCH_FILENAME = "Epoch_{epoch:04d}_Batch_{batch_start:05d}_{batch_end:05d}.json"
+    EPOCH_FILENAME = "Epoch_{epoch_start:04d}_{epoch_end:04d}.json"
+
+    @property
+    def current_epoch(self) -> int:
+        return self._current_epoch
+
+    @property
+    def current_batch(self) -> int:
+        return self._current_batch
+
     def __init__(
         self,
-        filepath: str = './logs',
-        save_freq: Union[str, int] = -1,
-        display_weight:bool=False,
+        dirname: str = "./logs",
+        filename: Optional[str] = None,
+        save_freq: Union[str, int, LoggerSaveMode] = "epoch",
         *args: Any,
         **kwargs: Any
-    ) -> None:
+    ):
         super().__init__(*args, **kwargs)
 
-        if save_freq == "batch":
-            save_freq = 1
-        if (save_freq != "epoch") and not isinstance(save_freq, int):
-            raise ValueError('save_freq must be "epoch", "batch" or an integer')
+        self.set_save_freq(save_freq)
+        self.set_paths(dirname, filename)
+        self.reset_data()
 
-        self.save_batch = isinstance(save_freq, int)
-        self.save_freq = save_freq if self.save_batch else None
-        self.filepath = filepath
-        self.display_weight = display_weight
-        self.reset()
+    def set_save_freq(
+        self,
+        value: Union[str, int, LoggerSaveMode] = "epoch"
+    ):
+        if isinstance(value, int) and (value >= 0):
+            save_mode = LoggerSaveMode.BATCH
+            save_freq = value
+        else:
+            try:
+                save_mode = LoggerSaveMode.parse(value)
+                save_freq = -1
+            except Exception as e:
+                raise ValueError('Save frequency must be "train", "epoch", "batch" or non-negative integer')
+        self.save_mode = save_mode
+        self.save_freq = save_freq
 
-    def reset(self):
+    def set_paths(
+        self,
+        dirname: str = './logs',
+        filename: Optional[str] = None
+    ): 
+        if filename is None:
+            if self.save_mode == LoggerSaveMode.BATCH:
+                filename = self.BATCH_FILENAME
+            elif self.save_mode in [LoggerSaveMode.EPOCH, LoggerSaveMode.TRAIN]:
+                filename = self.EPOCH_FILENAME
+            else:
+                raise ValueError(
+                    f'Invalid save mode: {self.save_mode}'
+                )
+        self.dirname = dirname
+        self.filename = filename
+
+    def get_filepath(
+        self,
+        epoch_start: int,
+        epoch_end: Optional[int] = None,
+        batch_start: Optional[int] = None,
+        batch_end: Optional[int] = None
+    ) -> str:
+        kwargs = {}
+        if epoch_end is None:
+            epoch_end = epoch_start
+        kwargs['epoch_start'] = epoch_start
+        kwargs['epoch_end'] = epoch_end
+        kwargs['epoch'] = epoch_start
+        if (batch_start is not None) and (batch_end is not None):
+            kwargs['batch_start'] = batch_start
+            kwargs['batch_end'] = batch_end
+        basename = self.filename.format(**kwargs)
+        return os.path.join(self.dirname, basename)
+
+    def reset_data(self):     
+        self.reset_epoch_data()
+        self.reset_batch_data()
+
+    def reset_epoch_data(self):
         self._current_epoch = 0
-        self._logs = {
-            self.EPOCH: []
-        }
-        if self.save_batch:
-            self._logs[self.BATCH] = []
-            self.reset_batch_data()
+        self.reset_current_epoch_data()
+        self._full_epoch_logs = defaultdict(list)
 
+    def reset_current_epoch_data(self):
+        self._current_epoch_logs = defaultdict(list)
+        
     def reset_batch_data(self):
-        """Resets the batch data storage for a new epoch."""
         self._current_batch = 0
-        self._current_epoch_batch_logs = []
+        self.reset_current_batch_data()
+        self._full_batch_logs = defaultdict(list)
 
-    def get_weights_savedir(self, stage:str):
-        """Returns the directory path for saving epoch metrics."""
-        return os.path.join(self.filepath, self.SUBDIRS[stage])
+    def reset_current_batch_data(self):
+        self._current_batch_logs = defaultdict(list)
 
-    def _log_epoch(self, epoch, weights):
-        """Logs epoch-level metrics."""
-        logs = {
-            "weights": np.array(weights).flatten(),
-            "epoch"  : epoch
-        }
-        if self.display_weight:
-            print(f"\n[WeightLogger] Epoch {epoch}, Trainable Weights = {logs['weights']}")
-        self._current_epoch_logs = logs
-        self._save_logs(logs, stage=self.EPOCH)
+    def _update_logs(
+        self,
+        data: Dict[str, Any],
+        epoch: int,
+        batch: Optional[int] = None
+    ) -> None:
+        logs = self._current_epoch_logs if batch is None else self._current_batch_logs
+        for key, value in data.items():
+            logs[key].append(value)
+        logs['epoch'].append(epoch)
+        if batch is not None:
+            logs['batch'].append(batch)
 
-    def _log_batch(self, batch, weights):
-        """Logs batch-level metrics."""
-        if not self.save_batch:
+    def _extend_epoch_logs(self):
+        for key, value in self._current_epoch_logs.items():
+            self._full_epoch_logs[key].extend(value)
+        self.reset_current_epoch_data()
+
+    def _save_logs(
+        self,
+        mode: LoggerSaveMode,
+        indent: int = 2,
+    ) -> None:
+        batch_start = None
+        batch_end = None
+        if mode == LoggerSaveMode.BATCH:
+            logs = self._current_batch_logs
+            batch_start = np.min(logs['batch'])
+            batch_end = np.max(logs['batch'])
+        elif mode == LoggerSaveMode.EPOCH:
+            logs = self._current_epoch_logs
+        elif mode == LoggerSaveMode.TRAIN:
+            logs = self._full_epoch_logs
+        else:
+            raise ValueError(
+                f'Invalid save mode: {mode}'
+            )
+        if not logs:
             return
-        logs = {
-            "weights": np.array(weights).flatten(),
-            "epoch"  : self._current_epoch,
-            "batch"  : batch
-        }
+        epoch_start = np.min(logs['epoch'])
+        epoch_end = np.max(logs['epoch'])
+        filepath = self.get_filepath(
+            epoch_start=epoch_start,
+            epoch_end=epoch_end,
+            batch_start=batch_start,
+            batch_end=batch_end
+        )
+        with open(filepath, 'w') as file:
+            json.dump(logs, file, indent=indent, cls=NpEncoder)
 
-        self._current_epoch_batch_logs.append(logs)
-
-        if (self.save_freq > 0) and ((batch + 1) % self.save_freq == 0):
-            self._save_logs(self._current_epoch_batch_logs, stage=self.BATCH)
-            self._logs[self.BATCH].extend(self._current_epoch_batch_logs)
-            self._current_epoch_batch_logs= []
-
-    def _update_logs(self):
-        self._logs[self.EPOCH].append(self._current_epoch_logs)
-        if self.save_batch:
-            logs = self._current_epoch_batch_logs
-            if logs:
-                self._logs[self.BATCH].extend(logs)
+    def get_log_data(
+        self,
+        logs=None
+    ) -> Dict[str, Any]:
+        raise NotImplementedError
 
     def on_train_begin(self, logs=None):
         """Sets up directories and data at the start of training."""
-        try:
-            trainable_weights = np.array(self.model.trainable_weights)
-        except:
-            raise RuntimeError("can not convert trainable weights into numpy arrays")
-        os.makedirs(self.filepath, exist_ok=True)
-        os.makedirs(self.get_weights_savedir(self.EPOCH), exist_ok=True)
-        if self.save_batch:
-            os.makedirs(self.get_weights_savedir(self.BATCH), exist_ok=True)
-        self.reset()
+        os.makedirs(self.dirname, exist_ok=True)
+        self.reset_data()
 
     def on_epoch_begin(self, epoch, logs=None):
         """Updates the current epoch index at the start of each epoch."""
@@ -192,77 +261,110 @@ class WeightsLogger(tf.keras.callbacks.Callback):
         """Updates the current batch index for training at the beginning of each batch."""
         self._current_batch = batch
 
-    def on_epoch_end(self, epoch, logs=None):
-        """Logs and saves weights at the end of each epoch."""
-        trainable_weights = np.array(self.model.trainable_weights)
-        self._log_epoch(epoch, trainable_weights)
-        self._update_logs()
-        if self.save_batch:
-            if self._current_epoch_batch_logs:
-                self._save_logs(self._current_epoch_batch_logs, stage=self.BATCH)
-            self.reset_batch_data()
+    def on_epoch_end(self, epoch, logs=None) -> None:
+        """Logs and saves data at the end of each epoch."""
+        data = self.get_log_data(logs)
+        self._update_logs(data, epoch=epoch)
+
+        if self.save_mode == LoggerSaveMode.EPOCH:
+            self._save_logs(LoggerSaveMode.EPOCH)
+            self._extend_epoch_logs()
+
+        self.reset_batch_data()
         
-    def on_train_batch_end(self, batch, logs=None):
+    def on_train_batch_end(self, batch, logs=None) -> None:
         """Logs weights at the end of each training batch."""
-        trainable_weights = np.array(self.model.trainable_weights)
-        self._log_batch(batch, trainable_weights)
-    
-    def _save_logs(self, logs, stage=None, indent: int = 2):
-        """
-        Saves the weight logs to a file.
+        data = self.get_log_data(logs)
+        self._update_logs(data, epoch=self.current_epoch, batch=batch)
 
-        Args:
-            logs (dict or list): Logs to be saved.
-            stage (str, optional): The training stage ('batch' or 'epoch').
-            indent (int): Indentation level for pretty-printing the JSON file.
-        """
-        if not logs:
-            return
-        if isinstance(logs, list):  # Batch logs
-            epoch = logs[0]['epoch']
-            batch_start = logs[0]['batch']
-            batch_end = logs[-1]['batch']
-            if batch_start == batch_end:
-                batch_range = f"{batch_start:04d}"
-            else:
-                batch_range = f"{batch_start:04d}_{batch_end:04d}"
-            filename = os.path.join(self.get_weights_savedir(stage),
-                                    f"metrics_epoch_{epoch:04d}_batch_{batch_range}.json")
-        else:  # Epoch logs
-            epoch = logs['epoch']
-            filename = os.path.join(self.get_weights_savedir(stage),
-                                    f"metrics_epoch_{epoch:04d}.json")
+        if self.save_mode == LoggerSaveMode.BATCH:
+            if (self.save_freq > 0) and ((batch + 1) % self.save_freq == 0):
+                self._save_logs(LoggerSaveMode.BATCH)
+                self.reset_current_batch_data()
 
-        with open(filename, 'w') as f:
-            json.dump(logs, f, indent=indent, cls=NpEncoder)
+    def on_train_end(self, logs=None) -> None:
+        if self.save_mode == LoggerSaveMode.TRAIN:
+            self._extend_epoch_logs()
+            self._save_logs(LoggerSaveMode.TRAIN)
+        self.reset_current_epoch_data()
+        self.reset_current_batch_data()
 
-    def _get_logs_from_path(self, path:str):
-        logs = []
-        log_filenames = glob.glob(os.path.join(path, '*.json'))
-        for filename in log_filenames:
-            data = json.load(open(filename))
-            if isinstance(data, list):
-                logs.extend(data)
-            else:
-                logs.append(data)
-        if logs:
-            if 'batch' in logs[0]:
-                logs = sorted(logs, key=itemgetter('epoch', 'batch'))
-            else:
-                logs = sorted(logs, key=itemgetter('epoch'))
-        return logs
+    def _get_logs_from_path(
+        self,
+        path: str
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        batch_logs = defaultdict(list)
+        epoch_logs = defaultdict(list)
+        filenames = glob.glob(os.path.join(path, '*.json'))
+        for filename in filenames:
+            with open(filename, 'r') as file:
+                data = json.load(file)
+            logs = batch_logs if 'batch' in data else epoch_logs
+            for key, value in data.items():
+                logs[key].extend(value)
+        return batch_logs, epoch_logs
 
     def restore(self):
-        self.reset()
-        if self.save_batch:
-            stages = [self.EPOCH, self.BATCH]
-        else:
-            stages = [self.EPOCH]
-        for stage in stages:
-            epoch_logs_path = self.get_metrics_savedir(stage)
-            self._logs[stage] = self._get_logs_from_path(epoch_logs_path)
+        self.reset_data()
+        batch_logs = defaultdict(list)
+        epoch_logs = defaultdict(list)
+        filenames = glob.glob(os.path.join(self.dirname, '*.json'))
+        for filename in filenames:
+            with open(filename, 'r') as file:
+                data = json.load(file)
+            logs = batch_logs if 'batch' in data else epoch_logs
+            for key, value in data.items():
+                logs[key].extend(value)
+        self._full_batch_logs = batch_logs
+        self._full_epoch_logs = epoch_logs
+        
+class WeightsLogger(BaseLogger):
+    
+    def __init__(
+        self,
+        dirname: str = './weight_logs',
+        filename: Optional[str] = None,
+        save_freq: Union[str, int, LoggerSaveMode] = "epoch",
+        display_weight: bool = False,
+        *args: Any,
+        **kwargs: Any
+    ):
+        super().__init__(
+            dirname=dirname,
+            filename=filename,
+            save_freq=save_freq,
+            *args, **kwargs
+        )
+        self.display_weight = display_weight
+
+    def get_log_data(
+        self,
+        logs=None
+    ) -> Dict[str, Any]:
+        data = {
+            'weights': np.array(self.model.trainable_weights)
+        }
+        return data
+
+    def _update_logs(
+        self,
+        data: Dict[str, Any],
+        epoch: int,
+        batch: Optional[int] = None
+    ) -> None:
+        if (batch is None) and (self.display_weight):
+            print(f"\n[WeightLogger] Epoch {epoch}, Trainable Weights = {data['weights']}")
+        super()._update_logs(data=data, epoch=epoch, batch=batch)
+
+    def on_train_begin(self, logs=None):
+        """Sets up directories and data at the start of training."""
+        try:
+            trainable_weights = np.array(self.model.trainable_weights)
+        except:
+            raise RuntimeError("can not convert trainable weights into numpy arrays")
+        super().on_train_begin(logs=logs)
             
-class MetricsLogger(tf.keras.callbacks.Callback):
+class MetricsLogger(BaseLogger):
 
     """
     A TensorFlow Keras callback to log and save training and testing metrics.
@@ -276,207 +378,42 @@ class MetricsLogger(tf.keras.callbacks.Callback):
             - If 'epoch', saves epoch-level metrics at the end of each epoch.
             - If 'batch', saves batch-level metrics after every training/testing batch.
             - If a positive integer, saves accumulated batch-level metrics at this interval.
-            - If a negative integer, saves accumulated batch-level metrics over all batches at the end of each epoch.
     """
-    
-    TRAIN = 'train'
-    TEST = 'test'
-    EPOCH = 'epoch'
-
-    SUBDIRS = {
-        TRAIN : 'batch_train_metrics',
-        TEST  : 'batch_test_metrics',
-        EPOCH : 'epoch_metrics'
-    }    
 
     def __init__(
         self,
-        filepath: str = './logs',
-        save_freq: Union[str, int] = -1,
+        dirname: str = './metric_logs',
+        filename: Optional[str] = None,
+        save_freq: Union[str, int, LoggerSaveMode] = "epoch",
         *args: Any,
         **kwargs: Any
-    ) -> None:
-        super().__init__(*args, **kwargs)
+    ):
+        super().__init__(
+            dirname=dirname,
+            filename=filename,
+            save_freq=save_freq,
+            *args, **kwargs
+        )
 
-        if save_freq == "batch":
-            save_freq = 1
-        if (save_freq != "epoch") and not isinstance(save_freq, int):
-            raise ValueError('save_freq must be "epoch", "batch" or an integer')
-
-        self.save_batch = isinstance(save_freq, int)
-        self.save_freq = save_freq if self.save_batch else None
-        self.filepath = filepath
-        self.reset()
-
-    def reset(self):
-        self._current_epoch = 0
-        self._logs = {
-            self.EPOCH: []
-        }
-        self._logs[self.TRAIN] = []
-        self._logs[self.TEST] = []
-        self.reset_batch_data()
-
-    def reset_batch_data(self):
-        """Resets the batch data storage for a new epoch."""
-        self._current_batch = {self.TRAIN: 0, self.TEST: 0}
-        self._current_epoch_batch_logs = {self.TRAIN: [], self.TEST: []}
-
-    def get_metrics_savedir(self, stage:str):
-        """Returns the directory path for saving epoch metrics."""
-        return os.path.join(self.filepath, self.SUBDIRS[stage])
-
-    def _log_epoch(self, epoch, logs):
-        """Logs epoch-level metrics."""
-        logs = dict() if logs is None else dict(logs)
-        logs["epoch"] = epoch
-        self._current_epoch_logs = logs
-        self._save_metrics(logs, stage=self.EPOCH)
-
-    def _log_batch(self, batch, logs, stage: str):
-        """Logs batch-level metrics."""
-        if not self.save_batch:
-            return
-        logs = dict() if logs is None else dict(logs)
-        logs["epoch"] = self._current_epoch
-        logs["batch"] = batch
-        
-        self._current_epoch_batch_logs[stage].append(logs)
-
-        if (self.save_freq > 0) and ((batch + 1) % self.save_freq == 0):
-            self._save_metrics(self._current_epoch_batch_logs[stage], stage=stage)
-            self._logs[stage].extend(self._current_epoch_batch_logs[stage])
-            self._current_epoch_batch_logs[stage] = []
-
-    def _update_logs(self):
-        self._logs[self.EPOCH].append(self._current_epoch_logs)
-        if self.save_batch:
-            for stage in [self.TRAIN, self.TEST]:
-                logs = self._current_epoch_batch_logs[stage]
-                if logs:
-                    self._logs[stage].extend(logs)
-            
-    def on_train_begin(self, logs=None):
-        """Sets up directories and data at the start of training."""
-        os.makedirs(self.filepath, exist_ok=True)
-        os.makedirs(self.get_metrics_savedir(self.EPOCH), exist_ok=True)
-        if self.save_batch:
-            os.makedirs(self.get_metrics_savedir(self.TRAIN), exist_ok=True)
-            os.makedirs(self.get_metrics_savedir(self.TEST), exist_ok=True)
-        self.reset()
-
-    def on_epoch_begin(self, epoch, logs=None):
-        """Updates the current epoch index at the start of each epoch."""
-        self._current_epoch = epoch
-
-    def on_train_batch_begin(self, batch, logs=None):
-        """Updates the current batch index for training at the beginning of each batch."""
-        self._current_batch[self.TRAIN] = batch
-
-    def on_test_batch_begin(self, batch, logs=None):
-        """Updates the current batch index for testing at the beginning of each batch."""
-        self._current_batch[self.TEST] = batch
-
-    def on_epoch_end(self, epoch, logs=None):
-        """Logs and saves metrics at the end of each epoch."""
-        self._log_epoch(epoch, logs)
-        self._update_logs()
-        if self.save_batch:
-            for stage, batch_logs in self._current_epoch_batch_logs.items():
-                if batch_logs:
-                    self._save_metrics(batch_logs, stage=stage)
-            self.reset_batch_data()
-        
-    def on_train_batch_end(self, batch, logs=None):
-        """Logs metrics at the end of each training batch."""
-        self._log_batch(batch, logs, self.TRAIN)
-
-    def on_test_batch_end(self, batch, logs=None):
-        """Logs metrics at the end of each testing batch."""
-        self._log_batch(batch, logs, self.TEST)
-
-    def _save_metrics(self, logs, stage=None, indent: int = 2):
-        """
-        Saves the metrics to a file.
-
-        Args:
-            logs (dict or list): Metrics to be saved.
-            stage (str, optional): The training stage ('train', 'test' or 'epoch').
-            indent (int): Indentation level for pretty-printing the JSON file.
-        """
-        if not logs:
-            return
-        if isinstance(logs, list):  # Batch logs
-            epoch = logs[0]['epoch']
-            batch_start = logs[0]['batch']
-            batch_end = logs[-1]['batch']
-            if batch_start == batch_end:
-                batch_range = f"{batch_start:04d}"
-            else:
-                batch_range = f"{batch_start:04d}_{batch_end:04d}"
-            filename = os.path.join(self.get_metrics_savedir(stage),
-                                    f"metrics_epoch_{epoch:04d}_batch_{batch_range}.json")
-        else:  # Epoch logs
-            epoch = logs['epoch']
-            filename = os.path.join(self.get_metrics_savedir(stage),
-                                    f"metrics_epoch_{epoch:04d}.json")
-
-        with open(filename, 'w') as f:
-            json.dump(logs, f, indent=indent)
-
-    def _get_logs_from_path(self, path:str):
-        logs = []
-        log_filenames = glob.glob(os.path.join(path, '*.json'))
-        for filename in log_filenames:
-            data = json.load(open(filename))
-            if isinstance(data, list):
-                logs.extend(data)
-            else:
-                logs.append(data)
-        if logs:
-            if 'batch' in logs[0]:
-                logs = sorted(logs, key=itemgetter('epoch', 'batch'))
-            else:
-                logs = sorted(logs, key=itemgetter('epoch'))
-        return logs
-
-    def restore(self):
-        self.reset()
-        if self.save_batch:
-            stages = [self.EPOCH, self.TRAIN, self.TEST]
-        else:
-            stages = [self.EPOCH]
-        for stage in stages:
-            epoch_logs_path = self.get_metrics_savedir(stage)
-            self._logs[stage] = self._get_logs_from_path(epoch_logs_path)
-
-    def get_dataframe(self, stage:str, drop_first_batch:bool=True):
-        if stage not in self._logs:
-            return None
-        import pandas as pd
-        df = pd.DataFrame(self._logs[stage])
-        if 'batch' in df.columns:
-            df['epoch_cont'] = df['epoch'] + df['batch'] / (df['batch'].max() + 1)
-            if drop_first_batch:
-                df = df.loc[1:]
-        return df
-
-    def get_epoch_history(self):
-        data = self._logs.get('epoch', [])
-        return list_of_dict_to_dict_of_list(data)
+    def get_log_data(
+        self,
+        logs=None
+    ) -> Dict[str, Any]:
+        data = dict() if logs is None else dict(logs)
+        return data
     
 class EarlyStopping(tf.keras.callbacks.EarlyStopping):
     def __init__(
         self,
         *args,
         interrupt_freq: Optional[int] = None,
-        always_restore_best_weights: bool = False,  # Ensures best weights restoration even if training completes normally
+        always_restore_best_weights: bool = False, 
         **kwargs
     ):
         super().__init__(*args, **kwargs)
         if (interrupt_freq) and (interrupt_freq <= 0):
             raise ValueError('interrupt_freq cannot be negative')
-        self.restore_config = {}  # ✅ Keeps restore configuration for external state restoration
+        self.restore_config = {} 
         self.interrupt_freq = interrupt_freq
         self.interrupted = False
         self.resumed = False
@@ -507,13 +444,14 @@ class EarlyStopping(tf.keras.callbacks.EarlyStopping):
         model_filepath = self._get_model_filepath(model_ckpt_filepath, epoch=best_epoch)
         model.load_weights(model_filepath)
         best_weights = model.get_weights()
-        sys.stdout.write(f"[INFO] Found best metric value of {best_metric} from epoch {best_epoch}.\n")
+        sys.stdout.write(f"[INFO] Restored model weights at epoch {best_epoch} {model_filepath}.\n")
+        #sys.stdout.write(f"[INFO] Found best metric value of {best_metric} from epoch {best_epoch}.\n")
 
         # Load final epoch weights for comparison
-        if best_epoch != last_epoch:
-            model_filepath = self._get_model_filepath(model_ckpt_filepath, epoch=last_epoch)
-            model.load_weights(model_filepath)
-        sys.stdout.write(f"[INFO] Restored model weights at epoch {last_epoch} {model_filepath}.\n")
+        #if best_epoch != last_epoch:
+        #    model_filepath = self._get_model_filepath(model_ckpt_filepath, epoch=last_epoch)
+        #    model.load_weights(model_filepath)
+        #sys.stdout.write(f"[INFO] Restored model weights at epoch {last_epoch} {model_filepath}.\n")
 
         self.restore_config = {
             'wait': last_epoch - best_epoch,
@@ -529,7 +467,7 @@ class EarlyStopping(tf.keras.callbacks.EarlyStopping):
         Load checkpointed metric values to determine the best epoch.
         """
         path_wildcard = re.sub(r"{.*}", r"*", metrics_ckpt_filepath)
-        ckpt_paths = glob.glob(path_wildcard)
+        ckpt_paths = sorted(glob.glob(path_wildcard))
         basename = os.path.basename(metrics_ckpt_filepath)
         basename_regex = re.compile("^" + re.sub(r"{.*}", r".*", basename) + "$")
         ckpt_paths = [path for path in ckpt_paths if basename_regex.match(os.path.basename(path))]
@@ -542,7 +480,7 @@ class EarlyStopping(tf.keras.callbacks.EarlyStopping):
             epochs.append(data['epoch'])
             metrics.append(data[self.monitor])
 
-        epochs = np.array(epochs)
+        epochs = np.array(epochs) + 1
         metrics = np.array(metrics)
         return epochs, metrics
 
@@ -550,7 +488,7 @@ class EarlyStopping(tf.keras.callbacks.EarlyStopping):
         """
         Generate the correct filepath for a given epoch checkpoint.
         """
-        filepath = model_ckpt_filepath.format(epoch=epoch + 1)
+        filepath = model_ckpt_filepath.format(epoch=epoch)
         return filepath
 
     def on_train_begin(self, logs=None):
@@ -579,8 +517,12 @@ class EarlyStopping(tf.keras.callbacks.EarlyStopping):
         """
         super().on_train_end(logs)
         if self.always_restore_best_weights and self.best_weights is not None:
+            if self.model.stop_training:
+                text = "with"
+            else:
+                text = "without"
             sys.stdout.write(
-                f"[INFO] Training completed without early stopping. Restoring best weights from epoch {self.best_epoch}.\n"
+                f"[INFO] Training completed {text} early stopping. Restoring best weights from epoch {self.best_epoch + 1}.\n"
             )
             self.model.set_weights(self.best_weights)
 

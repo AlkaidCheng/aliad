@@ -6,7 +6,11 @@ from quickstats import AbstractObject
 from quickstats.core.hashing import hash_dict
 from sklearn.metrics import accuracy_score, roc_curve, log_loss, auc
 
-from .metrics import sic, max_sic, threshold_sic, nll, prior_ratio
+from .metrics import (
+    sic, max_sic, threshold_sic,
+    nll, prior_ratio,
+    mean_log_likelihood
+)
 
 class ModelOutput(AbstractObject):
     """A class for computing and caching various model evaluation metrics.
@@ -404,6 +408,16 @@ class ModelOutput(AbstractObject):
             fpr=fpr,
             fpr_thres=fpr_thres
         )
+
+    def mean_log_likelihood(self, y_mask: Optional[int] = None, **kwargs: Any) -> float:
+        kwargs = self._update_kwargs(['y_true', 'y_pred', 'sample_weight'], kwargs)
+        return self._retrieve(
+            'mean_log_likelihood',
+            mean_log_likelihood,
+            ['y_pred', 'sample_weight', 'y_mask'],
+            y_mask=y_mask,
+            **kwargs
+        )
     
     def nll(self, **kwargs: Any) -> float:
         """Compute negative log-likelihood.
@@ -427,11 +441,12 @@ class ModelOutput(AbstractObject):
         )
 
 
-    def prior_ratio(self, **kwargs: Any) -> float:
+    def prior_ratio(self, y_mask: Optional[int] = 0, **kwargs: Any) -> float:
         kwargs = self._update_kwargs(['y_true', 'y_pred', 'sample_weight'], kwargs)
         return self._retrieve(
             'prior_ratio',
             prior_ratio,
-            ['y_true', 'y_pred', 'sample_weight'],
+            ['y_true', 'y_pred', 'sample_weight', 'y_mask'],
+            y_mask=y_mask,
             **kwargs
         )
